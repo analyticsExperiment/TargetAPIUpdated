@@ -1,11 +1,6 @@
-$env:NODE_TLS_REJECT_UNAUTHORIZED="0"
-npm run inventory:activities -- --skip-details --no-workbook
-npm run inventory:offers -- --skip-details --no-workbook
-npm run inventory:audiences -- --skip-details --no-workbook
-Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED
-
-
 node -e "import('./src/run-target-inventory.js').then(m=>{const c=m.loadTargetInventoryConfig(m.parseTargetInventoryCliArgs([])); console.log(c.acceptHeader); console.log(c.offerAcceptHeader)})"
 
-application/vnd.adobe.target.v3+json
-application/vnd.adobe.target.v2+json
+
+npm run inventory:offers -- --skip-details --no-workbook
+
+npm run inventory:target
