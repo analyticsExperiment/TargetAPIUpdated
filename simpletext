@@ -4,3 +4,17 @@ node -e "import('./src/run-target-inventory.js').then(m=>{const c=m.loadTargetIn
 npm run inventory:offers -- --skip-details --no-workbook
 
 npm run inventory:target
+
+
+$env:NODE_TLS_REJECT_UNAUTHORIZED="0"
+node -e "import('./src/run-target-inventory.js').then(m=>{const c=m.loadTargetInventoryConfig(m.parseTargetInventoryCliArgs([])); console.log(c.acceptHeader); console.log(c.offerAcceptHeader)})"
+Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED
+
+
+$env:NODE_TLS_REJECT_UNAUTHORIZED="0"
+npm run inventory:offers -- --skip-details --no-workbook
+Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED
+
+$env:NODE_TLS_REJECT_UNAUTHORIZED="0"
+npm run inventory:target
+Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED
