@@ -1,0 +1,43 @@
+$runDir = ".\target-inventory-output\2026-06-07T21-23-45"
+
+@'
+import { readdir, readFile, mkdir } from "node:fs/promises";
+import path from "node:path";
+import { buildActivityDetailsRows, ACTIVITY_DETAILS_COLUMNS } from "./src/business-inventory.js";
+import { writeCsv, writeJson } from "./src/target-activities-inventory.js";
+
+const runDir = process.argv[2];
+const rawActivitiesDir = path.join(runDir, "raw", "activities");
+
+const files = (await readdir(rawActivitiesDir))
+  .filter((file) => file.toLowerCase().endsWith(".json"));
+
+const warnings = [];
+const activityPackages = await Promise.all(files.map(async (file) => ({
+  detail: JSON.parse(await readFile(path.join(rawActivitiesDir, file), "utf8")),
+  rawFile: path.posix.join("raw", "activities", file)
+})));
+
+const rows = activityPackages.flatMap((activityPackage) =>
+  buildActivityDetailsRows(activityPackage, { warnings })
+);
+
+await mkdir(path.join(runDir, "csv"), { recursive: true });
+await mkdir(path.join(runDir, "debug"), { recursive: true });
+
+await writeCsv(
+  path.join(runDir, "csv", "activity_details_inventory.csv"),
+  rows,
+  ACTIVITY_DETAILS_COLUMNS
+);
+
+await writeJson(
+  path.join(runDir, "debug", "extraction-warnings.json"),
+  warnings
+);
+
+console.log(`Rebuilt activity_details_inventory.csv with ${rows.length} rows and ${ACTIVITY_DETAILS_COLUMNS.length} columns.`);
+console.log(`Warnings: ${warnings.length}`);
+'@ | node --input-type=module - $runDir
+
+node src/create-business-inventory-workbook.js --input $runDir
