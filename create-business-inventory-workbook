@@ -1,0 +1,401 @@
+import ExcelJS from "exceljs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const DEFAULT_OUTPUT_ROOT = "target-inventory-output";
+const DEFAULT_WORKBOOK_NAME = "adobe-target-business-inventory.xlsx";
+const MAX_EXCEL_CELL_LENGTH = 32000;
+const ACTIVITY_DETAILS_SHEET_NAME = "Activity Details Inventory";
+const FORCED_WRAP_COLUMNS = new Set([
+  "experience_option_location_name",
+  "experience_option_offer_name",
+  "experience_option_offer_additionalDetails"
+]);
+const MAX_WIDTH_BY_COLUMN = {
+  experience_option_location_name: 45,
+  experience_option_offer_name: 45,
+  experience_option_offer_additionalDetails: 45
+};
+
+const PRIMARY_CSV_SHEETS = [
+  { fileName: "activities_list.csv", sheetName: "Activities List" },
+  { fileName: "activity_details_inventory.csv", sheetName: "Activity Details Inventory" },
+  { fileName: "offers_list.csv", sheetName: "Offers List" },
+  { fileName: "offer_details_inventory.csv", sheetName: "Offer Details Inventory" },
+  { fileName: "audiences_list.csv", sheetName: "Audiences List" },
+  { fileName: "audience_details_inventory.csv", sheetName: "Audience Details Inventory" }
+];
+
+export function parseBusinessWorkbookCliArgs(argv = process.argv.slice(2)) {
+  const options = {};
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const [key, inlineValue] = arg.includes("=") ? arg.split(/=(.*)/s, 2) : [arg, undefined];
+    const nextValue = inlineValue ?? argv[index + 1];
+
+    if (key === "--input") {
+      options.inputDir = nextValue;
+      if (inlineValue === undefined) index += 1;
+    } else if (key === "--out") {
+      options.outputFile = nextValue;
+      if (inlineValue === undefined) index += 1;
+    } else if (key === "--help" || key === "-h") {
+      options.help = true;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+export async function createBusinessInventoryWorkbook(options = {}) {
+  const runDir = path.resolve(options.inputDir ?? (await findLatestBusinessRunDir(DEFAULT_OUTPUT_ROOT)));
+  const csvDir = path.join(runDir, "csv");
+  const reportsDir = path.join(runDir, "reports");
+  const outputFile = path.resolve(options.outputFile ?? path.join(runDir, DEFAULT_WORKBOOK_NAME));
+  const workbook = new ExcelJS.Workbook();
+  const sheetData = [];
+
+  for (const sheetInfo of PRIMARY_CSV_SHEETS) {
+    const csvText = await readFile(path.join(csvDir, sheetInfo.fileName), "utf8");
+    sheetData.push({
+      ...sheetInfo,
+      rows: parseCsv(csvText)
+    });
+  }
+
+  const errors = await readJsonIfExists(path.join(reportsDir, "errors.json")) ?? [];
+  const summaryMarkdown = await readTextIfExists(path.join(reportsDir, "inventory-summary.md"));
+
+  workbook.creator = "Adobe Target Business Inventory";
+  workbook.created = new Date();
+  workbook.modified = new Date();
+  workbook.properties.date1904 = false;
+
+  addSummarySheet(workbook, { runDir, outputFile, sheetData, errors, summaryMarkdown });
+
+  for (const sheetInfo of sheetData) {
+    addCsvSheet(workbook, sheetInfo);
+  }
+
+  addErrorsSheet(workbook, errors);
+
+  await workbook.xlsx.writeFile(outputFile);
+
+  return {
+    outputFile,
+    runDir,
+    sheetCount: workbook.worksheets.length
+  };
+}
+
+export async function findLatestBusinessRunDir(outputRoot = DEFAULT_OUTPUT_ROOT) {
+  const root = path.resolve(outputRoot);
+  const entries = await readdir(root, { withFileTypes: true });
+  const candidates = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const runDir = path.join(root, entry.name);
+    const csvStats = await stat(path.join(runDir, "csv")).catch(() => null);
+    if (csvStats?.isDirectory()) {
+      candidates.push(runDir);
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`No business inventory run folders with csv output found under ${root}`);
+  }
+
+  return candidates.sort((left, right) => path.basename(right).localeCompare(path.basename(left)))[0];
+}
+
+export function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (inQuotes) {
+      if (char === "\"" && next === "\"") {
+        cell += "\"";
+        index += 1;
+      } else if (char === "\"") {
+        inQuotes = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inQuotes = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(stripTrailingCarriageReturn(cell));
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+
+  if (cell !== "" || row.length > 0) {
+    row.push(stripTrailingCarriageReturn(cell));
+    rows.push(row);
+  }
+
+  return rows.filter((cells, index) => index === 0 || cells.some((cellValue) => cellValue !== ""));
+}
+
+function addSummarySheet(workbook, { runDir, outputFile, sheetData, errors, summaryMarkdown }) {
+  const sheet = workbook.addWorksheet("Summary", {
+    views: [{ state: "frozen", ySplit: 5 }]
+  });
+
+  sheet.mergeCells("A1:H1");
+  sheet.getCell("A1").value = "Adobe Target Business Inventory";
+  sheet.getCell("A1").font = { bold: true, size: 18, color: { argb: "FFFFFFFF" } };
+  sheet.getCell("A1").fill = solidFill("1F4E78");
+  sheet.getRow(1).height = 28;
+
+  const summaryRows = [
+    ["Run Folder", runDir],
+    ["Workbook File", outputFile],
+    ["Generated At", new Date().toISOString()],
+    ["Failed Detail Calls", errors.length]
+  ];
+  sheet.addRows([[], ...summaryRows]);
+  styleLabelValueBlock(sheet, 3, 6);
+
+  const indexStartRow = 9;
+  sheet.getCell(indexStartRow, 1).value = "Primary Sheet Index";
+  sheet.getCell(indexStartRow, 1).font = { bold: true, size: 14 };
+  sheet.getRow(indexStartRow + 1).values = ["Sheet", "Rows", "Source CSV"];
+  styleHeaderRow(sheet.getRow(indexStartRow + 1));
+
+  sheetData.forEach((sheetInfo, index) => {
+    const rowNumber = indexStartRow + 2 + index;
+    const dataRowCount = Math.max(sheetInfo.rows.length - 1, 0);
+    sheet.getCell(rowNumber, 1).value = {
+      text: sheetInfo.sheetName,
+      hyperlink: `#'${sheetInfo.sheetName.replace(/'/g, "''")}'!A1`
+    };
+    sheet.getCell(rowNumber, 1).font = { color: { argb: "FF0563C1" }, underline: true };
+    sheet.getCell(rowNumber, 2).value = dataRowCount;
+    sheet.getCell(rowNumber, 3).value = sheetInfo.fileName;
+  });
+
+  const guideRow = indexStartRow + sheetData.length + 5;
+  sheet.getCell(guideRow, 1).value = "Reading Guide";
+  sheet.getCell(guideRow, 1).font = { bold: true, size: 14 };
+  const guideRows = [
+    ["Activity Details Inventory", "One row per activity + experience + optionLocation."],
+    ["Offer Details Inventory", "One row per offer detail response with safe content metadata and previews."],
+    ["Audience Details Inventory", "One row per meaningful audience targetRule condition."],
+    ["Errors", "Failed API detail calls and unsupported offer detail routes."]
+  ];
+  sheet.getRow(guideRow + 1).values = ["Sheet", "Meaning"];
+  styleHeaderRow(sheet.getRow(guideRow + 1));
+  guideRows.forEach((row, index) => {
+    sheet.getRow(guideRow + 2 + index).values = row;
+  });
+
+  if (summaryMarkdown) {
+    const sourceRow = guideRow + guideRows.length + 5;
+    sheet.getCell(sourceRow, 1).value = "Markdown Summary Snapshot";
+    sheet.getCell(sourceRow, 1).font = { bold: true, size: 14 };
+    sheet.getCell(sourceRow + 1, 1).value = summaryMarkdown.slice(0, MAX_EXCEL_CELL_LENGTH);
+    sheet.getCell(sourceRow + 1, 1).alignment = { wrapText: true, vertical: "top" };
+    sheet.mergeCells(sourceRow + 1, 1, sourceRow + 8, 8);
+  }
+
+  sheet.columns = [
+    { width: 34 },
+    { width: 20 },
+    { width: 64 },
+    { width: 18 },
+    { width: 18 },
+    { width: 18 },
+    { width: 18 },
+    { width: 18 }
+  ];
+}
+
+function addCsvSheet(workbook, { sheetName, rows }) {
+  const sheet = workbook.addWorksheet(safeSheetName(sheetName), {
+    views: [{ state: "frozen", ySplit: 1 }]
+  });
+  const headers = rows[0] ?? [];
+  const bodyRows = rows.slice(1);
+
+  sheet.getRow(1).values = headers;
+  styleHeaderRow(sheet.getRow(1));
+
+  bodyRows.forEach((row) => {
+    sheet.addRow(row.map(sanitizeCell));
+  });
+
+  sheet.columns = headers.map((header, index) => ({
+    key: header,
+    width: estimateColumnWidth(header, bodyRows, index, sheetName)
+  }));
+
+  if (headers.length > 0) {
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: Math.max(bodyRows.length + 1, 1), column: headers.length }
+    };
+  }
+
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    row.eachCell((cell, columnNumber) => {
+      const header = headers[columnNumber - 1];
+      cell.alignment = { vertical: "top", wrapText: shouldWrapCell(cell.value, header, sheetName) };
+    });
+  });
+}
+
+function addErrorsSheet(workbook, errors) {
+  const sheet = workbook.addWorksheet("Errors", {
+    views: [{ state: "frozen", ySplit: 1 }]
+  });
+  const columns = ["section", "itemId", "itemType", "itemName", "status", "message", "url", "details"];
+  sheet.getRow(1).values = columns;
+  styleHeaderRow(sheet.getRow(1));
+  errors.forEach((error) => {
+    sheet.addRow(columns.map((column) => sanitizeCell(error?.[column])));
+  });
+  sheet.columns = columns.map((column, index) => ({
+    key: column,
+    width: estimateColumnWidth(column, errors.map((error) => columns.map((item) => error?.[item])), index)
+  }));
+  if (columns.length > 0) {
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: Math.max(errors.length + 1, 1), column: columns.length }
+    };
+  }
+}
+
+function styleHeaderRow(row) {
+  row.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  row.fill = solidFill("1F4E78");
+  row.alignment = { vertical: "middle", wrapText: true };
+}
+
+function styleLabelValueBlock(sheet, fromRow, toRow) {
+  for (let rowNumber = fromRow; rowNumber <= toRow; rowNumber += 1) {
+    sheet.getCell(rowNumber, 1).font = { bold: true };
+    sheet.getCell(rowNumber, 2).alignment = { wrapText: true, vertical: "top" };
+  }
+}
+
+function estimateColumnWidth(header, rows, index, sheetName) {
+  const values = [header, ...rows.slice(0, 200).map((row) => row[index])].map((value) => String(value ?? ""));
+  const maxLength = Math.max(...values.map((value) => value.length), 10);
+  const maxWidth = getMaxColumnWidth(header, sheetName);
+  return Math.min(Math.max(maxLength + 2, 12), maxWidth);
+}
+
+function sanitizeCell(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "object") return stripInvalidXmlChars(JSON.stringify(value)).slice(0, MAX_EXCEL_CELL_LENGTH);
+  return stripInvalidXmlChars(String(value)).slice(0, MAX_EXCEL_CELL_LENGTH);
+}
+
+function stripInvalidXmlChars(value) {
+  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+}
+
+function shouldWrapCell(value, header, sheetName) {
+  return shouldForceWrapColumn(header, sheetName) || String(value ?? "").length > 60 || /[\r\n]/.test(String(value ?? ""));
+}
+
+function getMaxColumnWidth(header, sheetName) {
+  if (sheetName === ACTIVITY_DETAILS_SHEET_NAME && MAX_WIDTH_BY_COLUMN[header]) {
+    return MAX_WIDTH_BY_COLUMN[header];
+  }
+  return 80;
+}
+
+function shouldForceWrapColumn(header, sheetName) {
+  return sheetName === ACTIVITY_DETAILS_SHEET_NAME && FORCED_WRAP_COLUMNS.has(header);
+}
+
+function safeSheetName(value) {
+  return String(value).replace(/[\\/*?:[\]]/g, " ").slice(0, 31);
+}
+
+function solidFill(argb) {
+  return {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb }
+  };
+}
+
+function stripTrailingCarriageReturn(value) {
+  return String(value).replace(/\r$/, "");
+}
+
+async function readJsonIfExists(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function readTextIfExists(filePath) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function printHelp() {
+  console.log(`Adobe Target business inventory workbook
+
+Usage:
+  node src/create-business-inventory-workbook.js [options]
+
+Options:
+  --input ./target-inventory-output/YYYY-MM-DDTHH-mm-ss
+  --out ./target-inventory-output/adobe-target-business-inventory.xlsx
+  --help
+`);
+}
+
+async function main() {
+  const options = parseBusinessWorkbookCliArgs();
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  const result = await createBusinessInventoryWorkbook(options);
+  console.log(`Workbook written to ${result.outputFile}`);
+}
+
+const currentFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exitCode = 1;
+  });
+}
