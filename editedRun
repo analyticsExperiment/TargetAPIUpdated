@@ -41,4 +41,6 @@ console.log(`Rebuilt activity_details_inventory.csv with ${rows.length} rows and
 console.log(`Warnings: ${warnings.length}`);
 '@ | node --input-type=module - $runDir
 
+Remove-Item Env:NODE_TLS_REJECT_UNAUTHORIZED
+
 node src/create-business-inventory-workbook.js --input $runDir
