@@ -1,0 +1,28 @@
+Hi Team,
+
+As part of the upcoming Adobe implementation standardization initiative, where the tagging foundation is being aligned toward a centralized data layer and Web SDK-based Adobe solutioning, we have created the first draft of the **Adobe Target Inventory Workbook**.
+
+The objective of this inventory is to provide a consolidated view of the current Adobe Target setup so that existing activities, offers, audiences, locations, and reporting dependencies can be reviewed before migration planning. This will help us understand how Target is currently being used across activities and what dependencies need to be considered as part of the Web SDK migration.
+
+The workbook currently includes the following sections:
+
+* **Activities List** – High-level list of Target activities, including activity ID, type, name, status, priority, and modified date.
+* **Activity Details Inventory** – Detailed mapping of each activity to its experiences, Target locations such as mboxes/selectors, mapped offers, associated audience IDs, and reporting/metric configuration.
+* **Offers List** – Master list of offers available in Target.
+* **Offer Details Inventory** – Details of each offer, including content availability, content type, script/HTML indicators, URLs, selectors, and content preview where applicable.
+* **Audiences List** – Master list of audiences configured in Target.
+* **Audience Details Inventory** – Readable breakdown of audience rule conditions, including the source parameter, match operator, match values, and logical grouping where available.
+
+The inventory has been generated using Adobe Target API-based extraction, followed by structured transformation into business-readable workbook tabs. The intent is not just to export raw Target data, but to organize it in a way that supports migration discovery, dependency review, and future-state planning.
+
+This is the first draft of the inventory, and we are continuing to refine validation checks and improve the readability of the output. As a next step, we would appreciate your review and feedback on:
+
+* Whether the current workbook structure is useful for migration discovery.
+* Whether any additional columns or views are required.
+* Whether the naming/grouping of the sheets aligns with how the business and implementation teams would like to review the inventory.
+* Any specific activities, audiences, offers, or reporting dependencies that should be highlighted separately.
+
+Please find the draft workbook attached for your review.
+
+Thanks,
+[Your Name]
